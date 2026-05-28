@@ -38,11 +38,23 @@ jobs:
       - name: Build Zydis (${{ matrix.platform }})
         shell: pwsh
         run: |
-          $sln = Get-ChildItem -Path zydis -Recurse -Filter 'Zydis.sln' -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $sln) { throw "Zydis.sln not found under zydis/" }
-          Write-Host "Building $($sln.FullName)"
-          & msbuild $sln.FullName /m /p:Configuration=Release /p:Platform=${{ matrix.msbuild_platform }}
+          # Zydis msvc solution uses configurations like "Release MT" — not plain "Release".
+          # Build the Zydis static-lib project directly; its OutDir is bin\Release<Arch>\
+          # which is exactly where TermWrap/EndpWrap expect to find Zydis.lib.
+          $proj = Get-ChildItem -Path zydis -Recurse -Filter 'Zydis.vcxproj' -ErrorAction SilentlyContinue |
+                  Where-Object { $_.FullName -match '\\msvc\\zydis\\' } |
+                  Select-Object -First 1
+          if (-not $proj) { throw "Zydis.vcxproj not found under zydis/msvc/zydis/" }
+          Write-Host "Building $($proj.FullName)"
+          & msbuild $proj.FullName /m '/p:Configuration=Release MT' /p:Platform=${{ matrix.msbuild_platform }}
           if ($LASTEXITCODE -ne 0) { throw "Zydis build failed" }
+          # Sanity check the expected output exists
+          $archDir = if ('${{ matrix.platform }}' -eq 'x64') { 'ReleaseX64' } else { 'ReleaseX86' }
+          $lib = Join-Path 'zydis\msvc\bin' "$archDir\Zydis.lib"
+          if (-not (Test-Path $lib)) {
+              Get-ChildItem zydis\msvc\bin -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+              throw "Expected $lib not produced by Zydis build"
+          }
 
       - name: Build TermWrap (${{ matrix.platform }})
         shell: cmd
