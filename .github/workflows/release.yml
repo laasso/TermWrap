@@ -30,11 +30,21 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          submodules: recursive
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Build (${{ matrix.platform }})
+      - name: Build Zydis (${{ matrix.platform }})
+        shell: pwsh
+        run: |
+          $sln = Get-ChildItem -Path zydis -Recurse -Filter 'Zydis.sln' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $sln) { throw "Zydis.sln not found under zydis/" }
+          Write-Host "Building $($sln.FullName)"
+          & msbuild $sln.FullName /m /p:Configuration=Release /p:Platform=${{ matrix.msbuild_platform }}
+          if ($LASTEXITCODE -ne 0) { throw "Zydis build failed" }
+
+      - name: Build TermWrap (${{ matrix.platform }})
         shell: cmd
         run: msbuild TermWrap.sln /m /p:Configuration=Release /p:Platform=${{ matrix.msbuild_platform }}
 
