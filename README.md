@@ -14,9 +14,29 @@ My rewrite of [rdpwrap](https://github.com/stascorp/rdpwrap)
 
 ## Usage
 
-### Install
+### Quick install (PowerShell one-liner)
 
-First, ensure [Microsoft Visual C++ 2015-2022 Redistributable (x64)](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist) is installed
+Open an **elevated** PowerShell prompt and run:
+
+```powershell
+irm https://raw.githubusercontent.com/laasso/TermWrap/master/install.ps1 | iex
+```
+
+This downloads the latest release, copies the DLLs to `%ProgramFiles%\RDP Wrapper\`, merges the registry, and applies the USB redirection group policies.
+
+To pass options (e.g., skip the USB policies, or uninstall):
+
+```powershell
+# Install without applying USB group policies
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/laasso/TermWrap/master/install.ps1))) -SkipUsbPolicy
+
+# Uninstall
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/laasso/TermWrap/master/install.ps1))) -Action Uninstall
+```
+
+Make sure [Microsoft Visual C++ 2015-2022 Redistributable (x64)](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist) is installed beforehand.
+
+### Manual install
 
 Copy the dlls for your architecture to "%ProgramFiles%\RDP Wrapper\" and merge "Install_termwrap_umwrap.reg" or "Install_termwrap_only.reg", then reboot system
 

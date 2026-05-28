@@ -1,0 +1,111 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v1.0.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: x64
+            msbuild_platform: x64
+          - platform: x86
+            msbuild_platform: Win32
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build (${{ matrix.platform }})
+        shell: cmd
+        run: msbuild TermWrap.sln /m /p:Configuration=Release /p:Platform=${{ matrix.msbuild_platform }}
+
+      - name: Stage artifacts
+        shell: pwsh
+        run: |
+          $stage = "stage/TermWrap-${{ matrix.platform }}"
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+
+          $plat = "${{ matrix.msbuild_platform }}"
+          $outRoots = @(
+            "$plat\Release",
+            "TermWrap\$plat\Release",
+            "UmWrap\$plat\Release",
+            "EndpWrap\$plat\Release"
+          )
+
+          $dlls = @('TermWrap.dll')
+          if ('${{ matrix.platform }}' -eq 'x64') {
+            $dlls += @('UmWrap.dll','EndpWrap.dll')
+          }
+
+          foreach ($dll in $dlls) {
+            $found = Get-ChildItem -Recurse -Filter $dll -ErrorAction SilentlyContinue |
+                     Where-Object { $_.FullName -match "\\$plat\\Release\\" } |
+                     Select-Object -First 1
+            if ($found) {
+              Copy-Item $found.FullName -Destination $stage -Force
+              Write-Host "Staged $($found.FullName)"
+            } else {
+              Write-Warning "$dll not found for $plat"
+            }
+          }
+
+          if (Test-Path 'dist') {
+            Get-ChildItem 'dist' -Filter '*.reg' -ErrorAction SilentlyContinue |
+              Copy-Item -Destination $stage -Force
+          }
+
+          Compress-Archive -Path "$stage\*" -DestinationPath "TermWrap-${{ matrix.platform }}.zip" -Force
+          Get-ChildItem "TermWrap-${{ matrix.platform }}.zip" | Format-List
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TermWrap-${{ matrix.platform }}
+          path: TermWrap-${{ matrix.platform }}.zip
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la artifacts/
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: ${{ github.event.inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          files: |
+            artifacts/*.zip
+            install.ps1
