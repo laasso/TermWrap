@@ -38,15 +38,16 @@ jobs:
       - name: Build Zydis (${{ matrix.platform }})
         shell: pwsh
         run: |
-          # Zydis msvc solution uses configurations like "Release MT" — not plain "Release".
-          # Build the Zydis static-lib project directly; its OutDir is bin\Release<Arch>\
-          # which is exactly where TermWrap/EndpWrap expect to find Zydis.lib.
+          # TermWrap headers declare Zydis as dllimport (__imp_* symbols), so Zydis must
+          # be built as a DLL. "Release MD DLL" matches TermWrap's /MD CRT and produces
+          # both Zydis.dll and the import Zydis.lib under bin\Release<Arch>\ — exactly
+          # where TermWrap/EndpWrap expect them.
           $proj = Get-ChildItem -Path zydis -Recurse -Filter 'Zydis.vcxproj' -ErrorAction SilentlyContinue |
                   Where-Object { $_.FullName -match '\\msvc\\zydis\\' } |
                   Select-Object -First 1
           if (-not $proj) { throw "Zydis.vcxproj not found under zydis/msvc/zydis/" }
           Write-Host "Building $($proj.FullName)"
-          & msbuild $proj.FullName /m '/p:Configuration=Release MT' /p:Platform=${{ matrix.msbuild_platform }}
+          & msbuild $proj.FullName /m '/p:Configuration=Release MD DLL' /p:Platform=${{ matrix.msbuild_platform }}
           if ($LASTEXITCODE -ne 0) { throw "Zydis build failed" }
           # Sanity check the expected output exists
           $archDir = if ('${{ matrix.platform }}' -eq 'x64') { 'ReleaseX64' } else { 'ReleaseX86' }
@@ -89,6 +90,16 @@ jobs:
             } else {
               Write-Warning "$dll not found for $plat"
             }
+          }
+
+          # Zydis.dll is a runtime dependency of TermWrap (dllimport linkage).
+          $archDir = if ('${{ matrix.platform }}' -eq 'x64') { 'ReleaseX64' } else { 'ReleaseX86' }
+          $zydisDll = Join-Path 'zydis\msvc\bin' "$archDir\Zydis.dll"
+          if (Test-Path $zydisDll) {
+            Copy-Item $zydisDll -Destination $stage -Force
+            Write-Host "Staged $zydisDll"
+          } else {
+            Write-Warning "Zydis.dll not found at $zydisDll"
           }
 
           if (Test-Path 'dist') {
