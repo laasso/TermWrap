@@ -92,6 +92,29 @@ function Apply-UsbPolicies {
     Set-PolicyValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services\Client' 'fUsbRedirectionEnableMode' 2
 }
 
+function Stop-RdpServices {
+    # TermService holds TermWrap.dll open. Stopping it with -Force takes down
+    # dependents (UmRdpService, SessionEnv, etc). Save their state so we can
+    # restart the same ones afterward.
+    $svc = Get-Service -Name 'TermService' -ErrorAction SilentlyContinue
+    if (-not $svc) { return @() }
+    $dependents = @(Get-Service -Name 'TermService' -DependentServices |
+                    Where-Object { $_.Status -eq 'Running' } |
+                    Select-Object -ExpandProperty Name)
+    Write-Host 'Stopping TermService (and dependents)...' -ForegroundColor Cyan
+    Stop-Service -Name 'TermService' -Force -ErrorAction Stop
+    return ,@('TermService') + $dependents
+}
+
+function Start-RdpServices {
+    param([string[]]$Services)
+    if (-not $Services) { return }
+    foreach ($n in $Services) {
+        Write-Host "Starting $n..." -ForegroundColor Cyan
+        Start-Service -Name $n -ErrorAction SilentlyContinue
+    }
+}
+
 function Find-OrThrow {
     param([string]$Root, [string]$Filter)
     $f = Get-ChildItem $Root -Recurse -Filter $Filter -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -109,28 +132,33 @@ function Invoke-Install {
     $tmp = Join-Path $env:TEMP "TermWrap_$(Get-Random)"
     New-Item -ItemType Directory -Path $tmp | Out-Null
 
+    $stopped = @()
     try {
         Get-ReleaseAssets -DestDir $tmp
 
-        $term = Find-OrThrow $tmp 'TermWrap.dll'
-        $um   = Find-OrThrow $tmp 'UmWrap.dll'
-        $reg  = Find-OrThrow $tmp 'Install_termwrap_umwrap.reg'
+        $term  = Find-OrThrow $tmp 'TermWrap.dll'
+        $um    = Find-OrThrow $tmp 'UmWrap.dll'
+        $zydis = Find-OrThrow $tmp 'Zydis.dll'
+        $reg   = Find-OrThrow $tmp 'Install_termwrap_umwrap.reg'
 
-        Write-Host "Copying DLLs to $InstallDir..." -ForegroundColor Cyan
-        Copy-Item $term, $um -Destination $InstallDir -Force
+        $stopped = Stop-RdpServices
 
         Write-Host 'Merging registry...' -ForegroundColor Cyan
         $p = Start-Process -FilePath reg.exe -ArgumentList @('import', "`"$reg`"") -Wait -PassThru -NoNewWindow
         if ($p.ExitCode -ne 0) { throw "reg.exe import failed with exit code $($p.ExitCode)." }
 
+        Write-Host "Copying DLLs to $InstallDir..." -ForegroundColor Cyan
+        Copy-Item $term, $um, $zydis -Destination $InstallDir -Force
+
         if (-not $SkipUsbPolicy) { Apply-UsbPolicies }
     }
     finally {
+        Start-RdpServices -Services $stopped
         Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
     }
 
     Write-Host ''
-    Write-Host 'TermWrap installed. A reboot is required for the changes to take effect.' -ForegroundColor Green
+    Write-Host 'TermWrap installed. TermService has been restarted; a full reboot is recommended but not required.' -ForegroundColor Green
 
     if (-not $NoRestart) {
         $r = Read-Host 'Reboot now? [y/N]'
@@ -144,19 +172,24 @@ function Invoke-Uninstall {
     $tmp = Join-Path $env:TEMP "TermWrap_$(Get-Random)"
     New-Item -ItemType Directory -Path $tmp | Out-Null
 
+    $stopped = @()
     try {
         Get-ReleaseAssets -DestDir $tmp
         $reg = Find-OrThrow $tmp 'Revert_to_default.reg'
+
+        $stopped = Stop-RdpServices
+
         Write-Host 'Reverting registry...' -ForegroundColor Cyan
         Start-Process -FilePath reg.exe -ArgumentList @('import', "`"$reg`"") -Wait -NoNewWindow
+
+        if (Test-Path $InstallDir) {
+            Write-Host "Removing $InstallDir..." -ForegroundColor Cyan
+            Remove-Item $InstallDir -Recurse -Force
+        }
     }
     finally {
+        Start-RdpServices -Services $stopped
         Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
-    }
-
-    if (Test-Path $InstallDir) {
-        Write-Host "Removing $InstallDir..." -ForegroundColor Cyan
-        Remove-Item $InstallDir -Recurse -Force
     }
 
     Write-Host 'TermWrap uninstalled. Reboot required.' -ForegroundColor Green
